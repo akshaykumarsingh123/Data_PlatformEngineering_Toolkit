@@ -1,0 +1,1 @@
+EXEC dbo.AzureSQLMaintenance  @operation = 'all', @LogToTable = 1,  @mode = 'smart',  @RebuildHeaps=1;

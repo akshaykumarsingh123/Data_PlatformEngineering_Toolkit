@@ -1,0 +1,9 @@
+USE master;
+GO
+SELECT @@VERSION as 'SQL Server version';
+GO
+-- Shows if the Always On availability groups feature is enabled
+SELECT SERVERPROPERTY ('IsHadrEnabled') as 'Is Always On enabled? (1 true, 0 false)';
+GO
+-- Lists all trace flags enabled on SQL Server
+DBCC TRACESTATUS;
