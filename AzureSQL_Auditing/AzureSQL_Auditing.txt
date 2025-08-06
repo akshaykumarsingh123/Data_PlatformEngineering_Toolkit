@@ -1,0 +1,54 @@
+--Enabling Auditing in Azure SQL DB
+
+LGIF	Login Failed	Triggered when a login attempt fails.
+SL	SELECT	A SELECT statement was executed.
+IN	INSERT	An INSERT statement was executed.
+DL	DELETE	A DELETE statement was executed.
+UP	UPDATE	An UPDATE statement was executed.
+EX	EXECUTE	A stored procedure or function was executed.
+CR	CREATE	A CREATE operation occurred (e.g., table, user).
+AL	ALTER	An ALTER operation occurred.
+DR	DROP	A DROP operation occurred.
+AUSC	Audit Session Changed	Indicates changes to the audit session.
+CR	CREATE — Object creation (e.g., tables, users)
+AL	ALTER — Modifications to existing objects
+DR	DROP — Object deletion
+BA	BACKUP — Backup operations
+RS	RESTORE — Restore operations
+LGIS	Login Succeeded — Successful login attempts
+LGIF	Login Failed — Failed login attempts
+AUSC	Audit Session Changed — Audit configuration changes
+DBCC	DBCC Command Executed — Integrity checks or diagnostics
+GR	GRANT — Permission granted
+RV	REVOKE — Permission revoked
+DN	DENY — Permission denied
+IMP	IMPERSONATE — Impersonation of another principal
+EX	EXECUTE — Stored procedure or function execution
+UD	User Defined — Custom audit events via sp_audit_write
+BCM	Batch Completed	Indicates that a batch of T-SQL statements has finished executing. This includes stored procedures, ad hoc queries, or any multi-statement batch. Useful for tracking what was run and when.
+DBAS	Database Authentication Succeeded	Represents a successful login to a contained database (i.e., one that uses database-level authentication).
+RCM	RPC Completed	Indicates that a remote procedure call (RPC) has completed. This often involves executing stored procedures via client applications like SSMS or Azure Data Studio.
+
+
+SELECT 
+server_instance_name,
+event_time,
+action_id,
+succeeded,
+session_id,
+session_server_principal_name,
+database_name,
+statement,
+application_name,
+client_ip,
+host_name,
+duration_milliseconds,
+additional_information,
+file_name
+FROM sys.fn_get_audit_file (
+    'https://yyzdbstorage.blob.core.windows.net/sqldbauditlogs/cd01d-sqlsrv01/master/SqlDbAuditing_ServerAudit_NoRetention/2025-07-28',
+    DEFAULT,
+    DEFAULT
+)
+where database_name='<Database_Name>' and
+action_id='<Action_Id>'
