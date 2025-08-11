@@ -1,0 +1,13 @@
+Why Are Tables with Only a Primary Key Allowed in Transactional Replication in SQL Server?
+In SQL Server Transactional Replication, tables with only a Primary Key (PK) are allowed because the replication engine relies on the Primary Key for efficient row identification and tracking during data changes. Here’s why this works:
+
+1. Primary Key Ensures Unique Row Identification
+Transactional Replication tracks INSERT, UPDATE, and DELETE operations using the transaction log.
+To efficiently locate and replicate specific rows, SQL Server needs a unique identifier.
+
+The Primary Key (PK) ensures that each row has a unique and non-null identifier, making replication reliable.
+
+2. Index Optimization for Replication Performance
+A Primary Key automatically creates a unique clustered or non-clustered index.
+This helps replication quickly locate and retrieve changes from the source table.
+Without an index, updates and deletes would require full table scans, impacting performance.
