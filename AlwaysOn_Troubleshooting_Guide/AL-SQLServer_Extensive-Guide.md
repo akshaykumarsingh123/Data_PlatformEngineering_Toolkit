@@ -16,16 +16,16 @@ SELECT * FROM sys.database_mirroring_endpoints;
 ________________________________________
 2. Examine the Log Send Queue and Network Speeds
 •	On the primary, use:
-SELECT 
+  SELECT 
   ag.name AS AGName,
   dbs.database_name,
   ars.synchronization_state_desc,
   ars.log_send_queue_size,
   ars.redo_queue_size
-FROM sys.dm_hadr_database_replica_states ars
-JOIN sys.availability_groups ag ON ars.group_id = ag.group_id
-JOIN sys.databases dbs ON ars.database_id = dbs.database_id
-WHERE ars.is_local = 1;
+  FROM sys.dm_hadr_database_replica_states ars
+  JOIN sys.availability_groups ag ON ars.group_id = ag.group_id
+  JOIN sys.databases dbs ON ars.database_id = dbs.database_id
+  WHERE ars.is_local = 1;
 •	High log_send_queue_size with low redo_queue_size means logs are not sent, likely because of a network/endpoint problem.
 
 
@@ -43,8 +43,8 @@ ________________________________________
 •	Confirm primary and secondary have enough resources. High IO latency, especially on secondary storage, delays redo and log replay.
 •	Run:
 
-SELECT * FROM sys.dm_os_performance_counters
-WHERE object_name LIKE '%Availability Replica%';
+   SELECT * FROM sys.dm_os_performance_counters
+   WHERE object_name LIKE '%Availability Replica%';
 ________________________________________
 
 5. Verify Endpoint Certificates/Authentication
@@ -239,3 +239,4 @@ e) Network diagnostics
 Ping with timestamp: ping -t <replicaIP>
 
 Test latency: Test-NetConnection -ComputerName <replica> -Port 5022 (AG endpoint port)
+
