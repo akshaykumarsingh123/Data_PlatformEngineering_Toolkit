@@ -65,8 +65,7 @@ ________________________________________
 •	If disk IO is slow, consider upgrading storage, resolving latency, or clearing resource bottlenecks.
 •	If the problem was manual suspension, resume data movement.
 •	For persistent log send queue buildup, consider temporarily removing and re-adding the replica to force resynchronization (last resort).
---****************************************************************************************************************************************************************************************************************************************************************************************************************************************
-
+--******************************************************************************************************************************************************************
 Quest2:
 Not able to add new database in an Availability group in SQL Server. It gets added in the AG group UI, however not appearing at the secondary replica.
 
@@ -90,8 +89,7 @@ Check AG endpoint state:
 3. Confirm Permissions
 •	The SQL Server Service Accounts on each replica must have access to each other (must be able to log in and perform backup/restore/seed operations).
 
---*******************************************************************************************************************************************************************--***************************************************************************************************************************************************************
-
+--******************************************************************************************************************************************************************
 Quest3:
 Failover occurs successfully in SQL Server Always-On but Databases take minutes to be accessible. 
 
@@ -239,4 +237,5 @@ CPU spikes: sys.dm_os_ring_buffers (type = RING_BUFFER_SCHEDULER_MONITOR)
 e) Network diagnostics
 
 Ping with timestamp: ping -t <replicaIP>
+
 Test latency: Test-NetConnection -ComputerName <replica> -Port 5022 (AG endpoint port)
