@@ -1,0 +1,178 @@
+
+SQL Server Indexes - Internals
+
+
+1) Clustered Index (B-tree) Traversal
+	• A clustered index is the physical organization of the table.
+	• The leaf level of the clustered index is the actual data rows.
+	• Higher levels (root, intermediate) store index keys and pointers (file_id:page_id:slot_id) to lower levels.
+👉 How SQL Server finds a value (example: find CustomerID = 42):
+
+[Root Page]
+   - Contains upper bound keys + pointers to Intermediate pages
+   |
+   v
+[Intermediate Page(s)]
+   - Narrow down search range (e.g., 1–50, 51–100, …)
+   |
+   v
+[Leaf Page(s)]
+   - Contains actual data rows (with clustering key)
+
+Clustered Index Traversal:
+
+[Root Page: File 1, Page 100]
+   Keys: [50] 
+   Pointers: ( <50 → Page 200 , >=50 → Page 300 )
+       |
+       v
+[Intermediate Page: File 1, Page 200]
+   Keys: [20, 35] 
+   Pointers: (<20 → Page 400 , 20–35 → Page 410, >35 → Page 420)
+       |
+       v
+[Leaf Page: File 1, Page 400]
+   Data rows with clustering keys 1–20
+   Example Row:
+      Slot 0: CustomerID=15, Name="Alice"
+      Slot 1: CustomerID=18, Name="Bob"
+
+
+
+2) Nonclustered Index (B-tree) Traversal
+	• A nonclustered index has its own B-tree structure.
+	• The leaf level does not contain full data rows, but contains:
+		○ Key columns of the nonclustered index
+		○ Plus either:
+			§ The clustering key (if the table has a clustered index)
+			§ The RID (File:Page:Slot) if the table is a heap
+👉 Traversal is the same (root → intermediate → leaf), but after reaching the leaf:
+	• SQL Server uses the bookmark lookup (clustering key or RID) to jump to the actual row in the clustered index (or heap).
+	
+Non Clustered Index Traversal
+
+[Root Page: File 1, Page 500]
+   Keys: [M]
+   Pointers: (<M → Page 600 , >=M → Page 700)
+       |
+       v
+[Leaf Page: File 1, Page 600]
+   Entries:
+      Slot 0: LastName="Adams", ClusteringKey=15
+      Slot 1: LastName="Allen", ClusteringKey=18
+   |
+   +--> Use ClusteringKey (e.g., 18) to jump into Clustered Index leaf
+        and fetch the actual row
+
+
+Structural Navigation in SQL Server Index:
+
+-- Enable trace flag to allow DBCC PAGE output
+DBCC TRACEON(3604);
+
+-- Check index structure
+DBCC IND('TestDB', 'Customers', 1);   -- 1 = clustered index (usually PK)
+
+-- Suppose it shows:
+-- PageFID  PagePID  IAMFID  IAMPNO  ObjectID  IndexID  PartitionNumber  PageType
+-- 1        100      ...     ...     ...       1        1                2 (Index page - root)
+-- 1        200      ...     ...     ...       1        1                2 (Index page - intermediate)
+-- 1        400      ...     ...     ...       1        1                1 (Data page - leaf)
+
+-- Look inside a page (Root)
+DBCC PAGE('TestDB', 1, 100, 3);
+
+-- Sample Output (simplified):
+PAGE HEADER:
+  m_pageId = (1:100)
+  m_level = 2 (Root)
+  m_type = 2 (Index page)
+
+DATA:
+  Slot 0, key = 50 → child page = (1:200)
+  Slot 1, key = 100 → child page = (1:300)
+
+-- Look inside a leaf page
+DBCC PAGE('TestDB', 1, 400, 3);
+
+-- Sample Output (simplified):
+PAGE HEADER:
+  m_pageId = (1:400)
+  m_level = 0 (Leaf)
+  m_type = 1 (Data page)
+
+DATA:
+  Slot 0, Key = 15, Name="Alice"
+  Slot 1, Key = 18, Name="Bob"
+
+1. Logical vs Physical Order
+📘 Logical Order
+	• Determined by the index key values.
+	• Example: In a clustered index on CustomerID, rows should be logically ordered: 1, 2, 3, 4, 5 ….
+	• SQL Server maintains this order in the B-tree structure.
+📀 Physical Order
+	• The actual placement of pages on disk (FileID:PageID).
+	• Ideally, as you traverse the index, the next logical key’s row should be on the next physical page.
+When Fragmentation Happens
+	• If a page split occurs (due to inserts/updates), SQL Server may put the new page somewhere else in the file instead of next to the current page.
+	• Then, the next-page pointer (in the page header) points to a page that’s far away.
+This mismatch is external fragmentation.
+
+Arrow & Dash Diagram of Fragmentation
+Logical order:  1 ----> 2 ----> 3 ----> 4
+Physical order: Page(100) -> Page(101) -> Page(102) -> Page(103)
+
+Fragmented:
+Logical order:  1 ----> 2 ----> 3 ----> 4
+Physical order: Page(100) -> Page(450) -> Page(900) -> Page(200)
+
+DBCC PAGE Illustration
+
+DBCC TRACEON(3604);
+
+-- Show index page details
+DBCC IND('TestDB', 'Customers', 1);
+PageFID  PagePID  PageType  IndexLevel
+1        100      1 (Data)  0
+1        101      1 (Data)  0
+1        200      1 (Data)  0
+1        450      1 (Data)  0
+
+DBCC PAGE('TestDB', 1, 100, 3);
+
+PAGE HEADER:
+  m_pageId = (1:100)
+  m_level = 0
+  m_type = 1 (Data)
+  m_nextPage = (1:450)
+  m_prevPage = (NULL)
+
+DATA:
+  Slot 0: Key = 1
+  Slot 1: Key = 2
+
+DBCC PAGE('TestDB', 1, 450, 3);
+
+PAGE HEADER:
+  m_pageId = (1:450)
+  m_prevPage = (1:100)
+  m_nextPage = (1:200)
+
+DATA:
+  Slot 0: Key = 3
+  Slot 1: Key = 4
+
+• Logical order: 1,2 → 3,4 (correct, by index key).
+• Physical order: Page 100 → Page 450 → Page 200 (out of order).
+This is exactly external fragmentation: logical adjacency ≠ physical adjacency.
+
+Types of Fragmentation
+External Fragmentation (Extent/Page level)
+	• Definition: Logical order of pages (by key) ≠ Physical order on disk (PageIDs).
+	• Cause: Page splits, frequent inserts/updates.
+	• Effect: SQL Server can’t use sequential read-ahead; more random IO.
+
+Internal Fragmentation (Inside a page)
+	• Definition: Page has lots of free space / unused slots.
+	• Cause: Deletes, updates that shrink rows, fill factor settings.
+Effect: More pages needed to store the same data (wasteful memory/IO).
