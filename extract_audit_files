@@ -1,0 +1,311 @@
+#requires -version 5.1
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+# ----------------------------
+# EMAIL (Database Mail) CONFIG
+# ----------------------------
+$notifyTo      = "ISG_Data_I_Support@hoopp.com"
+$dbMailServer  = "AWDIISGDBASQL01.dev.hoopp.cloud"   # Server where Database Mail is configured
+$dbMailProfile = "YOUR_DBMAIL_PROFILE_NAME"          # <-- change this to the real profile name
+$dbMailSubject = "SQL Audit Export Job FAILED"
+
+# ----------------------------
+# CONFIG
+# ----------------------------
+$sqlcmdExe     = "sqlcmd.exe"
+
+# Control DB (where AdditionalAccountInfo lives)
+$controlServer = "AWDIISGDBASQL01.dev.hoopp.cloud"
+$controlDb     = "ISG_DBOPS"
+
+# Paths
+$automationRoot = "Y:\Automation"
+$splunkRoot     = "Y:\Splunk"
+$logRoot        = $automationRoot
+
+# SQL files
+$queryHeader = Join-Path $automationRoot "query_header.txt"
+
+# Log file (YYYYMMDD)
+$todayTag = (Get-Date).ToString("yyyyMMdd")
+$logFile  = Join-Path $logRoot "AuditExports_$todayTag.log"
+
+# Reports definition
+$reports = @(
+    @{
+        Name              = "CVPRDRDS"
+        TargetServer      = "cvprdrds.c7wxzo1mdrho.us-east-1.rds.amazonaws.com"
+        TargetUser        = "hooppadmin"
+        PasswordLookup    = @{ ID_Used="hooppadmin"; additional_accounts="AWS - MSSQL RDS MAster Account" }
+        DetailQueryFile   = Join-Path $automationRoot "query_variable_cvprdrds.txt"
+        WorkingCsv        = Join-Path $splunkRoot "MS_SQL_AUDIT_CVPRDRDS.csv"
+        ArchivePrefix     = "MS_SQL_AUDIT_CVPRDRDS_"
+    },
+    @{
+        Name              = "RDSCORE"
+        TargetServer      = "awpirdscore01.c7wxzo1mdrho.us-east-1.rds.amazonaws.com"
+        TargetUser        = "SQLPRDCORE"
+        PasswordLookup    = @{ ID_Used="SQLPRDCORE"; additional_accounts=$null }
+        DetailQueryFile   = Join-Path $automationRoot "query_variable_RDScore.txt"
+        WorkingCsv        = Join-Path $splunkRoot "MS_SQL_AUDIT_RDSCORE.csv"
+        ArchivePrefix     = "MS_SQL_AUDIT_RDSCORE_"
+    },
+    @{
+        Name              = "REPE"
+        TargetServer      = "repeprdrds.c7wxzo1mdrho.us-east-1.rds.amazonaws.com"
+        TargetUser        = "hooppadmin"
+        PasswordLookup    = @{ ID_Used="hooppadmin"; additional_accounts="AWS - MSSQL RDS MAster Account" }
+        DetailQueryFile   = Join-Path $automationRoot "query_variable_repeprdrds.txt"
+        WorkingCsv        = Join-Path $splunkRoot "MS_SQL_AUDIT_REPE.csv"
+        ArchivePrefix     = "MS_SQL_AUDIT_REPE_"
+    }
+)
+
+# ----------------------------
+# DATE RANGE (previous month)
+# p_from = first day of previous month
+# p_to   = first day of current month
+# ----------------------------
+$now    = Get-Date
+$p_to   = Get-Date -Year $now.Year -Month $now.Month -Day 1
+$p_from = $p_to.AddMonths(-1)
+
+$archiveMonthName = $p_from.ToString("MMMM")
+$archiveYear      = $p_from.ToString("yyyy")
+
+# ----------------------------
+# LOGGING
+# ----------------------------
+function Write-Log {
+    param([string]$Message)
+    $line = "[{0}] {1}" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $Message
+    Add-Content -Path $logFile -Value $line -Encoding UTF8
+}
+
+function Test-SqlcmdPresent {
+    $null = Get-Command $sqlcmdExe -ErrorAction Stop
+}
+
+function Invoke-DbMail {
+    param(
+        [string]$Subject,
+        [string]$Body
+    )
+
+    # Escape single quotes for T-SQL
+    $sub = $Subject.Replace("'", "''")
+    $bod = $Body.Replace("'", "''")
+    $to  = $notifyTo.Replace("'", "''")
+    $prof= $dbMailProfile.Replace("'", "''")
+
+    $tsql = @"
+EXEC msdb.dbo.sp_send_dbmail
+    @profile_name = N'$prof',
+    @recipients   = N'$to',
+    @subject      = N'$sub',
+    @body         = N'$bod';
+"@
+
+    $args = @(
+        "-S", $dbMailServer,
+        "-E",
+        "-d", "msdb",
+        "-Q", $tsql,
+        "-b",
+        "-V", "16",
+        "-h", "-1",
+        "-W",
+        "-w", "4096"
+    )
+
+    $out = & $sqlcmdExe @args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        # Don't mask original failure—just log mail failure too
+        Write-Log "WARNING: sp_send_dbmail failed. Output: $out"
+    } else {
+        Write-Log "Failure email sent to $notifyTo via Database Mail profile '$dbMailProfile'."
+    }
+}
+
+function Get-PasswordFromControlDb {
+    param(
+        [string]$ID_Used,
+        [string]$AdditionalAccounts
+    )
+
+    $where = "ID_Used = '$ID_Used'"
+    if ($null -ne $AdditionalAccounts -and $AdditionalAccounts.Trim() -ne "") {
+        $where += " AND additional_accounts = '$AdditionalAccounts'"
+    }
+
+    $sql = @"
+SET NOCOUNT ON;
+SELECT TOP (1) password_needed
+FROM dbo.AdditionalAccountInfo
+WHERE $where;
+"@
+
+    $args = @(
+        "-S", $controlServer,
+        "-E",
+        "-d", $controlDb,
+        "-Q", $sql,
+        "-b", ## Fail on SQL error
+        "-V", "16", #Record Severity in the logs
+        "-h", "-1", # Clean output
+        "-W",       # For formatting the output to make it readable
+        "-w", "4096"# Prevent line wrapping
+    )
+
+    Write-Log "Reading password from control DB for ID_Used='$ID_Used' AdditionalAccounts='$AdditionalAccounts'..."
+    $output = & $sqlcmdExe @args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to read password from control DB. Output: $output"
+    }
+
+    $pw = ($output | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($pw)) {
+        throw "Password not found in AdditionalAccountInfo for ID_Used='$ID_Used' AdditionalAccounts='$AdditionalAccounts'."
+    }
+
+    return $pw
+}
+
+function Invoke-SqlcmdFileToText {
+    param(
+        [string]$Server,
+        [string]$User,
+        [string]$Password,
+        [string]$InputSqlFile,
+        [datetime]$FromDate,
+        [datetime]$ToDate
+    )
+
+    # ensure valid SQL literals after substitution
+    $from = "'{0}'" -f $FromDate.ToString("yyyy-MM-dd")
+    $to   = "'{0}'" -f $ToDate.ToString("yyyy-MM-dd")
+
+    $args = @(
+        "-S", $Server,
+        "-U", $User,
+        "-P", $Password,
+        "-i", $InputSqlFile,
+        "-v", "p_from=$from", "p_to=$to",
+        "-W",
+        "-w", "4096",
+        "-s", ",",
+        "-h", "-1",
+        "-b",
+        "-V", "16"
+    )
+
+    $tmpOut = [System.IO.Path]::GetTempFileName()
+    $tmpErr = [System.IO.Path]::GetTempFileName()
+
+    Write-Log "Running sqlcmd file '$InputSqlFile' on '$Server'..."
+    $p = Start-Process -FilePath $sqlcmdExe -ArgumentList $args `
+        -NoNewWindow -Wait -PassThru `
+        -RedirectStandardOutput $tmpOut `
+        -RedirectStandardError  $tmpErr
+
+    $stdout = Get-Content $tmpOut -Raw
+    $stderr = Get-Content $tmpErr -Raw
+    Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+
+    if ($p.ExitCode -ne 0) {
+        throw "sqlcmd failed on $Server using $InputSqlFile. ExitCode=$($p.ExitCode). STDERR: $stderr"
+    }
+
+    return $stdout
+}
+
+function Write-TextToFile {
+    param(
+        [string]$Path,
+        [string]$Text,
+        [ValidateSet("Overwrite","Append")]
+        [string]$Mode
+    )
+
+    if ($Mode -eq "Overwrite") {
+        Set-Content -Path $Path -Value $Text -Encoding ASCII
+    } else {
+        Add-Content -Path $Path -Value $Text -Encoding ASCII
+    }
+}
+
+function Assert-FileNonEmpty {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        throw "Expected output file not found: $Path"
+    }
+    $len = (Get-Item $Path).Length
+    if ($len -le 0) {
+        throw "Output file is empty: $Path"
+    }
+}
+
+# ----------------------------
+# MAIN
+# ----------------------------
+try {
+    Test-SqlcmdPresent
+    Write-Log "==== Job STARTED. p_from=$($p_from.ToString('yyyy-MM-dd')) p_to=$($p_to.ToString('yyyy-MM-dd')) ===="
+
+    foreach ($r in $reports) {
+        Write-Log "---- Starting report: $($r.Name) ----"
+
+        foreach ($f in @($queryHeader, $r.DetailQueryFile)) {
+            if (-not (Test-Path $f)) { throw "Missing query file: $f" }
+        }
+
+        $pw = Get-PasswordFromControlDb -ID_Used $r.PasswordLookup.ID_Used -AdditionalAccounts $r.PasswordLookup.additional_accounts
+
+        $headerText = Invoke-SqlcmdFileToText -Server $r.TargetServer -User $r.TargetUser -Password $pw `
+                        -InputSqlFile $queryHeader -FromDate $p_from -ToDate $p_to
+        Write-TextToFile -Path $r.WorkingCsv -Text $headerText -Mode Overwrite
+
+        $detailText = Invoke-SqlcmdFileToText -Server $r.TargetServer -User $r.TargetUser -Password $pw `
+                        -InputSqlFile $r.DetailQueryFile -FromDate $p_from -ToDate $p_to
+        Write-TextToFile -Path $r.WorkingCsv -Text $detailText -Mode Append
+
+        Assert-FileNonEmpty -Path $r.WorkingCsv
+
+        $archiveName = "{0}{1}{2}.csv" -f $r.ArchivePrefix, $archiveMonthName, $archiveYear
+        $archivePath = Join-Path $splunkRoot $archiveName
+
+        Move-Item -Path $r.WorkingCsv -Destination $archivePath -Force
+        Write-Log "Archived: $archivePath"
+
+        Write-Log "---- Completed report: $($r.Name) ----"
+    }
+
+    Write-Log "==== Job COMPLETED OK ===="
+    exit 0
+}
+catch {
+    $errMsg = $_.Exception.Message
+    $fullMsg = @"
+SQL Audit export job FAILED.
+
+Date Range:
+  p_from = $($p_from.ToString('yyyy-MM-dd'))
+  p_to   = $($p_to.ToString('yyyy-MM-dd'))
+
+Error:
+  $errMsg
+
+Log file:
+  $logFile
+"@
+
+    Write-Log "ERROR: $errMsg"
+    Write-Log "==== Job FAILED ===="
+
+    # Send email (best effort)
+    Invoke-DbMail -Subject $dbMailSubject -Body $fullMsg
+
+    exit 1
+}
